@@ -1,0 +1,13 @@
+{
+  "name": "clgsru/laravel-restoring-directory-permissions",
+  "type": "project",
+  "description": "Content management system on Laravel Framework.",
+  "keywords": ["CMS", "framework", "laravel"],
+  "license": "GNU GPL v3",
+  "require": {
+    "php": "^7.2",
+    "ext-posix": "*"
+  },
+  "require-dev": {
+  }
+}
