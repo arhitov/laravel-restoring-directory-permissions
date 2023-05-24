@@ -5,7 +5,7 @@
   "keywords": ["CMS", "framework", "laravel"],
   "license": "GNU GPL v3",
   "require": {
-    "php": "^7.2",
+    "php": "^7.2|^8.1",
     "ext-posix": "*"
   },
   "require-dev": {
