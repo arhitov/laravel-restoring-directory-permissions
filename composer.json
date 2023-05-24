@@ -2,12 +2,25 @@
   "name": "clgsru/laravel-restoring-directory-permissions",
   "type": "project",
   "description": "Content management system on Laravel Framework.",
-  "keywords": ["CMS", "framework", "laravel"],
+  "keywords": ["laravel"],
   "license": "GNU GPL v3",
+  "support": {
+    "issues": "https://github.com/clgsru/laravel-restoring-directory-permissions/issues",
+    "source": "https://github.com/clgsru/laravel-restoring-directory-permissions"
+  },
+  "authors": [
+    {
+      "name": "Alexander Arhitov",
+      "email": "clgsru@gmail.com"
+    }
+  ],
   "require": {
     "php": ">=7.2",
     "ext-posix": "*"
   },
-  "require-dev": {
-  }
+  "bin": [
+    "bin/restoring-directory-permissions"
+  ],
+  "minimum-stability": "dev",
+  "prefer-stable": true
 }

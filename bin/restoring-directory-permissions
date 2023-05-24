@@ -1,0 +1,214 @@
+#!/usr/bin/env php
+<?php
+
+const INDENT = '   ';
+const TEXT_TITLE = "\x1b[1;34m";
+const COLOR_ACCENT = "\x1b[1m";
+const COLOR_PASSED = "\x1b[32m";
+const COLOR_CHANGE = "\x1b[33m";
+const COLOR_ERROR = "\x1b[1;37;41m";
+const COLOR_FATAL_ERROR = "\x1b[1;5;37;41m";
+const COLOR_RESET = "\x1b[0m";
+
+$file_env = implode(DIRECTORY_SEPARATOR, [__DIR__, '.env']);
+$file_permission = implode(DIRECTORY_SEPARATOR, [__DIR__, 'config_require', 'file_permission.php']);
+
+function getPathInfo($pathFull): array
+{
+    return [
+        'owner' => posix_getpwuid(fileowner($pathFull))['name'],
+        'group' => posix_getgrgid(filegroup($pathFull))['name'],
+        'perm' => octdec((int)substr(sprintf('%o', fileperms($pathFull)), -4))
+    ];
+}
+
+function friendlyPerm(int $perm): string
+{
+    return str_pad(sprintf('%o', $perm), 4, '0', STR_PAD_LEFT);
+}
+
+// Перехват ошибок и формирования исключения
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    // error was suppressed with the @-operator
+    if (0 === error_reporting()) {
+        return false;
+    }
+
+    throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
+});
+
+echo PHP_EOL . INDENT . TEXT_TITLE . 'Restore Directory Permissions' . COLOR_RESET . PHP_EOL . PHP_EOL;
+
+// Проверка наличие файл настроек каталогов
+if (! file_exists($file_permission)) {
+    echo INDENT . COLOR_ERROR . 'Permission configuration file not found!' . COLOR_RESET . PHP_EOL;
+    exit;
+}
+
+// Проверка наличие файл окружения
+if (! file_exists($file_env)) {
+    echo INDENT . COLOR_ERROR . 'DotEnv file not found!' . COLOR_RESET . PHP_EOL;
+    exit;
+}
+
+// Получение и разбор файла окружения
+try {
+    $env = file_get_contents('.env');
+    $env = preg_replace('/(^#)/m', ';', $env);
+    $env = parse_ini_string($env, false, INI_SCANNER_TYPED);
+} catch (Exception $e) {
+    echo INDENT . COLOR_ERROR . 'Unable to parse DotEnv file! ' . COLOR_RESET . PHP_EOL;
+    echo INDENT . COLOR_ERROR . $e->getMessage() . ' ' . COLOR_RESET . PHP_EOL;
+    exit;
+}
+
+if (empty($env['WWWGROUP']) || empty($env['WWWUSER'])) {
+    echo INDENT . COLOR_ERROR . 'WWWGROUP or WWWUSER environment variables not found in DotEnv file! ' . COLOR_RESET . PHP_EOL;
+    exit;
+}
+
+// Получение данных пользователя и группы
+try {
+    $WWWGROUP = posix_getpwnam($env['WWWGROUP']);
+    $WWWUSER = posix_getpwnam($env['WWWUSER']);
+    if (! $WWWGROUP || ! $WWWUSER) {
+        throw new ErrorException();
+    }
+    $uid = $WWWUSER['uid'];
+    $gid = $WWWGROUP['gid'];
+} catch (ErrorException $e) {
+    echo INDENT . COLOR_ERROR . 'Error get information for WWWGROUP or WWWUSER! ' . COLOR_RESET . PHP_EOL;
+    exit;
+}
+
+// Получение данных файла настроек каталогов
+try {
+    $permission = (function() use ($file_permission, $env) {
+        $permission = require $file_permission;
+        $replace_value = function(&$value) use ($env) {
+            if (is_string($value) && str_starts_with($value, 'env:')) {
+                $envName = substr($value, 4);
+                $value = $env[$envName] ?? null;
+            }
+        };
+        array_walk_recursive($permission, $replace_value);
+        return $permission;
+    })();
+} catch (ErrorException $e) {
+    echo INDENT . COLOR_ERROR . 'Failed to parse permissions configuration file!' . COLOR_RESET . PHP_EOL;
+    echo INDENT . COLOR_ERROR . $e->getMessage() . ' ' . COLOR_RESET . PHP_EOL;
+    exit;
+}
+
+echo INDENT . COLOR_PASSED . COLOR_ACCENT . 'WWWUSER: ' . COLOR_RESET . COLOR_PASSED . $WWWUSER['name'] . ' (' . $WWWUSER['uid'] . ')' . COLOR_RESET . PHP_EOL;
+echo INDENT . COLOR_PASSED . COLOR_ACCENT . 'WWWGROUP: ' . COLOR_RESET . COLOR_PASSED . $WWWGROUP['name'] . ' (' . $WWWGROUP['uid'] . ')' . COLOR_RESET . PHP_EOL . PHP_EOL;
+
+$countAll = 0;
+$countCreateOk = 0;
+$countCreateError = 0;
+$countOk = 0;
+$countChange = 0;
+$countError = 0;
+
+foreach ($permission as $path => $pathSetting) {
+    $countAll += 1;
+    $pathFull = __DIR__ . '/' . $path;
+    $create = null;
+
+    if (! file_exists($pathFull)) {
+        if ($pathSetting['type'] === 'dir') {
+            if (mkdir($pathFull, $pathSetting['perm'], true)) {
+                // clgs 2023.03.21 : Set permissions 0777 in mkdir not work. Use chmod.
+                chmod($pathFull, $pathSetting['perm']);
+                $countCreateOk += 1;
+                $create = true;
+            } else {
+                $countCreateError += 1;
+            }
+        } elseif ($pathSetting['type'] === 'file') {
+            if (false !== file_put_contents($pathFull, '')) {
+                chmod($pathFull, $pathSetting['perm']);
+                $countCreateOk += 1;
+                $create = true;
+            } else {
+                $countCreateError += 1;
+            }
+        }
+    }
+
+    $pathInfo = getPathInfo($pathFull);
+    echo INDENT . ($create ? COLOR_CHANGE . '+' . COLOR_RESET : '') . COLOR_ACCENT . $path . COLOR_RESET . ' - ';
+
+    $diff = array_diff_assoc($pathInfo, array_intersect_key($pathSetting, $pathInfo));
+
+    if (empty($diff)) {
+        echo COLOR_PASSED . 'Ok! ' . $pathInfo['owner'] . ':' . $pathInfo['group'] . ' ['  . friendlyPerm($pathInfo['perm']) . ']' . COLOR_RESET;
+        $countOk += 1;
+    } else {
+
+        exec('chown -R ' . $pathSetting['owner'] . ':' . $pathSetting['group'] . ' ' . $pathFull, $output, $return_var);
+        exec('chown -R ' . $pathSetting['owner'] . ':' . $pathSetting['group'] . ' ' . $pathFull . '  2>&1', $output, $return_var);
+        exec('chmod ' . friendlyPerm($pathSetting['perm']) . ' ' . $pathFull . '  2>&1', $output, $return_var);
+        if (! empty($pathSetting['recursively'])) {
+            exec('find ' . $pathFull . ' -type d -exec chmod ' . friendlyPerm($pathSetting['recursively'][0]) . ' {} +', $output, $return_var);
+            exec('find ' . $pathFull . ' -type f -exec chmod ' . friendlyPerm($pathSetting['recursively'][1]) . ' {} +', $output, $return_var);
+        }
+
+        clearstatcache(true, $pathFull);
+        $pathInfo2 = getPathInfo($pathFull);
+
+        $diff = array_diff_assoc($pathInfo2, array_intersect_key($pathSetting, $pathInfo2));
+        if (empty($diff)) {
+            echo COLOR_CHANGE . 'Change Ok! ' .
+                $pathInfo['owner'] . ':' . $pathInfo['group'] . ' ['  . friendlyPerm($pathInfo['perm']) . ']' .
+                ' => ' .
+                $pathSetting['owner'] . ':' . $pathSetting['group'] . ' ['  . friendlyPerm($pathSetting['perm']) . ']' .
+                COLOR_RESET;
+            $countChange += 1;
+        } else {
+            echo COLOR_ERROR . 'Change Fail! ' .
+                $pathInfo2['owner'] . ':' . $pathInfo2['group'] . ' ['  . friendlyPerm($pathInfo2['perm']) . ']' .
+                ' => ' .
+                $pathSetting['owner'] . ':' . $pathSetting['group'] . ' ['  . friendlyPerm($pathSetting['perm']) . ']' .
+                COLOR_RESET;
+            $countError += 1;
+        }
+    }
+
+    echo PHP_EOL;
+}
+
+echo PHP_EOL;
+
+$out = [COLOR_ACCENT . $countAll . ' all' . COLOR_RESET];
+if ($countOk) {
+    $out[] = COLOR_PASSED . $countOk . ' passed' . COLOR_RESET;
+}
+if ($countChange) {
+    $out[] = COLOR_CHANGE . $countChange . ' change' . COLOR_RESET;
+}
+if ($countError) {
+    $out[] = COLOR_ERROR . $countError . ' error' . COLOR_RESET;
+    $str = '   FATAL ERROR!   ';
+    $str_pad = str_pad(' ', strlen($str));
+    echo
+        INDENT . COLOR_FATAL_ERROR . $str_pad . COLOR_RESET . PHP_EOL .
+        INDENT . COLOR_FATAL_ERROR . $str . COLOR_RESET . PHP_EOL .
+        INDENT . COLOR_FATAL_ERROR . $str_pad . COLOR_RESET . PHP_EOL .
+        PHP_EOL;
+}
+if ($countCreateOk) {
+    $out[] = COLOR_CHANGE . $countCreateOk . ' created' . COLOR_RESET;
+}
+if ($countCreateError) {
+    $out[] = COLOR_ERROR . $countCreateError . ' create error' . COLOR_RESET;
+    $str = '   CREATE FATAL ERROR!   ';
+    $str_pad = str_pad(' ', strlen($str));
+    echo
+        INDENT . COLOR_FATAL_ERROR . $str_pad . COLOR_RESET . PHP_EOL .
+        INDENT . COLOR_FATAL_ERROR . $str . COLOR_RESET . PHP_EOL .
+        INDENT . COLOR_FATAL_ERROR . $str_pad . COLOR_RESET . PHP_EOL .
+        PHP_EOL;
+}
+
+echo INDENT . implode(', ', $out) . PHP_EOL . PHP_EOL;
